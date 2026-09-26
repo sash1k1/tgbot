@@ -6,7 +6,7 @@ import sqlite3
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Set, Tuple
 from aiogram import Bot, Dispatcher, types, filters, F
 from aiogram.types import Message, Chat, User
 from aiogram.filters import Command
@@ -14,14 +14,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 import logging
-import getpass
 
 # ─────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────
 
-BOT_TOKEN = "875416883:AAFoj-3QFHqNqNdFjR4y3-d8ZEdShkCQ"
-BOT_PASSWORD = "сашка крутой"
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_COMMAND_PREFIX = "/"
 
 CACHE_DIR = Path("./bot_data")
@@ -50,40 +48,6 @@ logger.info("Telegram Business Bot Initialization")
 logger.info("=" * 60)
 
 # ─────────────────────────────────────────
-# PASSWORD CHECK
-# ─────────────────────────────────────────
-
-def check_password() -> bool:
-    """Проверить пароль перед запуском."""
-    print("\n" + "=" * 60)
-    print("🔐 TELEGRAM BOT - ЗАЩИТА ПАРОЛЕМ")
-    print("=" * 60)
-    
-    max_attempts = 3
-    attempts = 0
-    
-    while attempts < max_attempts:
-        attempts += 1
-        try:
-            password_input = getpass.getpass(f"Введи пароль ({max_attempts - attempts + 1} попыток осталось): ")
-            
-            if password_input == BOT_PASSWORD:
-                print("✅ Пароль верный! Бот загружается...\n")
-                logger.info("✅ Password check passed")
-                return True
-            else:
-                print(f"❌ Пароль неверный! Осталось {max_attempts - attempts} попыток.\n")
-                logger.warning(f"Failed password attempt {attempts}/{max_attempts}")
-        except KeyboardInterrupt:
-            print("\n⛔ Запуск отменен пользователем.")
-            logger.info("Startup cancelled by user")
-            return False
-    
-    print("⛔ Максимум попыток исчерпан. Бот не запустится.")
-    logger.critical("Max password attempts exceeded")
-    return False
-
-# ─────────────────────────────────────────
 # DATABASE INIT
 # ─────────────────────────────────────────
 
@@ -93,7 +57,6 @@ def init_db():
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
         
-        # Мут-лист (chat_id + user_id, потому что группы разные)
         c.execute("""
             CREATE TABLE IF NOT EXISTS muted_users (
                 chat_id INTEGER NOT NULL,
@@ -104,7 +67,6 @@ def init_db():
             )
         """)
         
-        # Кэш сообщений
         c.execute("""
             CREATE TABLE IF NOT EXISTS message_cache (
                 msg_id INTEGER PRIMARY KEY,
@@ -117,7 +79,6 @@ def init_db():
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_msg_chat ON message_cache(chat_id, msg_id DESC)")
         
-        # Авто-реакции (глобальные)
         c.execute("""
             CREATE TABLE IF NOT EXISTS auto_reactions (
                 user_id INTEGER PRIMARY KEY,
@@ -138,7 +99,6 @@ def init_db():
 # ─────────────────────────────────────────
 
 def add_to_mute_list(chat_id: int, user_id: int, minutes: int = 0) -> bool:
-    """Добавить в мут-лист группы."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -151,14 +111,13 @@ def add_to_mute_list(chat_id: int, user_id: int, minutes: int = 0) -> bool:
         
         conn.commit()
         conn.close()
-        logger.debug(f"Muted {user_id} in chat {chat_id} for {minutes}m")
+        logger.debug(f"Muted {user_id} in chat {chat_id}")
         return True
     except Exception as e:
         logger.error(f"Error adding to mute list: {e}")
         return False
 
 def remove_from_mute_list(chat_id: int, user_id: int) -> bool:
-    """Удалить из мут-листа группы."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -172,7 +131,6 @@ def remove_from_mute_list(chat_id: int, user_id: int) -> bool:
         return False
 
 def is_muted(chat_id: int, user_id: int) -> bool:
-    """Проверить, в мут-листе ли."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -196,7 +154,6 @@ def is_muted(chat_id: int, user_id: int) -> bool:
         return False
 
 def cache_message(msg: Message) -> bool:
-    """Кэшировать сообщение."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -209,7 +166,6 @@ def cache_message(msg: Message) -> bool:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (msg.message_id, msg.chat.id, user_id, username, msg.text or "", datetime.now().timestamp()))
         
-        # Удалить старые
         c.execute("SELECT COUNT(*) FROM message_cache WHERE chat_id = ?", (msg.chat.id,))
         count = c.fetchone()[0]
         if count > 500:
@@ -227,7 +183,6 @@ def cache_message(msg: Message) -> bool:
         return False
 
 def get_cached_message(chat_id: int, msg_id: int) -> Optional[Dict]:
-    """Получить сообщение из кэша."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -251,7 +206,6 @@ def get_cached_message(chat_id: int, msg_id: int) -> Optional[Dict]:
         return None
 
 def set_auto_reaction(user_id: int, emoji: str) -> bool:
-    """Установить авто-реакцию."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -268,7 +222,6 @@ def set_auto_reaction(user_id: int, emoji: str) -> bool:
         return False
 
 def remove_auto_reaction(user_id: int) -> bool:
-    """Удалить авто-реакцию."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -282,7 +235,6 @@ def remove_auto_reaction(user_id: int) -> bool:
         return False
 
 def get_auto_reaction(user_id: int) -> Optional[str]:
-    """Получить эмодзи авто-реакции."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         c = conn.cursor()
@@ -302,20 +254,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ─────────────────────────────────────────
-# HELPER: Send to personal chat
-# ─────────────────────────────────────────
-
-async def send_to_admin(admin_id: int, text: str) -> bool:
-    """Отправить лог администратору."""
-    try:
-        await bot.send_message(admin_id, text, parse_mode="markdown")
-        logger.debug(f"Sent log to admin {admin_id}")
-        return True
-    except TelegramAPIError as e:
-        logger.error(f"Error sending to admin: {e}")
-        return False
-
-# ─────────────────────────────────────────
 # COMMANDS
 # ─────────────────────────────────────────
 
@@ -331,13 +269,11 @@ async def cmd_mute(message: Message):
         if not target_user:
             return
         
-        # Проверка прав
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
         if member.status not in ("creator", "administrator"):
             await message.reply("❌ Только администраторы могут мьютить.")
             return
         
-        # Парсим аргумент
         parts = message.text.split()
         minutes = 0
         if len(parts) > 1:
@@ -355,7 +291,6 @@ async def cmd_mute(message: Message):
             await message.reply("❌ Ошибка при добавлении в мут-лист.")
     except Exception as e:
         logger.error(f"Error in cmd_mute: {e}")
-        await message.reply(f"❌ Ошибка: {e}")
 
 @dp.message(Command("размут"))
 async def cmd_unmute(message: Message):
@@ -384,7 +319,7 @@ async def cmd_unmute(message: Message):
 
 @dp.message(Command("спам"))
 async def cmd_spam(message: Message):
-    """Команда: /спам [кол-во] [текст]"""
+    """Команда: /спам [текст] [кол-во]"""
     try:
         member = await bot.get_chat_member(message.chat.id, message.from_user.id)
         if member.status not in ("creator", "administrator"):
@@ -392,20 +327,26 @@ async def cmd_spam(message: Message):
             return
         
         parts = message.text.split(maxsplit=2)
+        
         if len(parts) < 3:
-            await message.reply("❌ Использование: `/спам [кол-во] [текст]`")
+            await message.reply("❌ Использование: `/спам [текст] [кол-во]`\n\nПример: `/спам привет 5`")
             return
         
         try:
-            count = int(parts[1])
+            count = int(parts[-1])
         except ValueError:
-            await message.reply("❌ Первый аргумент должен быть числом.")
+            await message.reply("❌ Последний аргумент должен быть числом.\nПример: `/спам привет 5`")
             return
         
-        spam_text_content = parts[2]
-        chat_id = message.chat.id
+        spam_text_content = " ".join(parts[1:-1])
         
+        if count <= 0 or count > 100:
+            await message.reply("❌ Количество должно быть от 1 до 100.")
+            return
+        
+        chat_id = message.chat.id
         success_count = 0
+        
         for i in range(count):
             try:
                 await bot.send_message(chat_id, spam_text_content)
@@ -500,7 +441,7 @@ async def cmd_help(message: Message):
 `/размут` — Размьютить пользователя (reply)
 
 **Спам:**
-`/спам [кол-во] [текст]` — Отправить текст N раз
+`/спам [текст] [кол-во]` — Отправить текст N раз
 `/лесенка [текст]` — Отправить каждое слово отдельно
 
 **Реакции:**
@@ -519,32 +460,25 @@ async def cmd_help(message: Message):
 async def handle_message(message: Message):
     """Обработчик всех сообщений."""
     try:
-        # Пропускаем команды и сообщения от самого бота
         if message.text and message.text.startswith("/"):
             return
         if message.from_user.is_bot:
             return
         
-        # Кэшируем
         cache_message(message)
         
-        # Проверка мут-листа
         if is_muted(message.chat.id, message.from_user.id):
             try:
                 await message.delete()
-                logger.info(f"Deleted muted message from {message.from_user.id} in {message.chat.id}")
+                logger.info(f"Deleted muted message from {message.from_user.id}")
             except Exception as e:
                 logger.warning(f"Could not delete muted message: {e}")
             return
         
-        # Авто-реакции
         emoji = get_auto_reaction(message.from_user.id)
         if emoji:
             try:
                 await message.react(reaction=[types.ReactionTypeEmoji(emoji=emoji)])
-                logger.debug(f"Added auto-reaction {emoji}")
-            except TelegramBadRequest as e:
-                logger.debug(f"Could not add reaction: {e}")
             except Exception as e:
                 logger.debug(f"Error adding reaction: {e}")
     
@@ -566,7 +500,6 @@ async def mute_cleanup_task():
             c.execute("DELETE FROM muted_users WHERE muted_until < ?", (now,))
             conn.commit()
             conn.close()
-            logger.debug("Mute cleanup executed")
         except Exception as e:
             logger.error(f"Error in mute_cleanup_task: {e}")
 
@@ -576,17 +509,11 @@ async def mute_cleanup_task():
 
 async def main():
     """Точка входа."""
-    # ПРОВЕРКА ПАРОЛЯ
-    if not check_password():
-        print("⛔ Доступ запрещен!")
-        exit(1)
-    
     logger.info("Starting initialization...")
     init_db()
     
     logger.info("Starting Telegram bot...")
     
-    # Фоновые задачи
     cleanup_task = asyncio.create_task(mute_cleanup_task())
     
     logger.info("✅ Bot is running!")
